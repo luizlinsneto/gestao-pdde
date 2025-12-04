@@ -5,6 +5,7 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 import json
 import os
+import base64
 
 # Configuração da Página
 st.set_page_config(page_title="Gestão Financeira Escolar - PDDE", layout="wide")
@@ -79,6 +80,47 @@ def load_global_programs_from_firebase(db):
     except Exception as e:
         return []
 
+# --- FUNÇÕES PARA ARQUIVOS (NOVO) ---
+def save_file_to_firebase(db, empenho_id, file_obj):
+    """Salva o arquivo em uma coleção separada para não pesar a lista principal"""
+    if db is None or file_obj is None: return
+    try:
+        # Limite de segurança do Firestore (aprox 1MB)
+        if file_obj.size > 1000 * 1024:
+            st.error("Arquivo muito grande! O limite é 1MB.")
+            return False
+            
+        file_bytes = file_obj.read()
+        b64_string = base64.b64encode(file_bytes).decode('utf-8')
+        
+        db.collection('pdde_arquivos').document(empenho_id).set({
+            'file_name': file_obj.name,
+            'file_data': b64_string
+        })
+        return True
+    except Exception as e:
+        st.error(f"Erro ao salvar arquivo: {e}")
+        return False
+
+def get_file_from_firebase(db, empenho_id):
+    """Recupera o arquivo apenas quando solicitado"""
+    if db is None: return None
+    try:
+        doc = db.collection('pdde_arquivos').document(empenho_id).get()
+        if doc.exists:
+            return doc.to_dict()
+        return None
+    except:
+        return None
+
+def delete_file_from_firebase(db, empenho_id):
+    if db is None: return
+    try:
+        db.collection('pdde_arquivos').document(empenho_id).delete()
+    except:
+        pass
+
+# --- FUNÇÕES DE SALVAMENTO ---
 def save_account_to_firebase(db, account_name, account_data):
     if db is None: return
     try:
@@ -414,7 +456,7 @@ def render_empenhos_global_view():
     # SISTEMA DE EDIÇÃO / CRIAÇÃO
     todos_empenhos = st.session_state['empenhos_global']
     
-    # 2. Seleção de Modo (Novo ou Editar Existente)
+    # 2. Seleção de Modo
     opcoes_edicao = ["➕ Novo Registro"]
     mapa_ids = {}
     
@@ -436,6 +478,7 @@ def render_empenhos_global_view():
     # Estados do Formulário
     dados_edicao = {}
     is_edit_mode = False
+    file_info = None # Armazena info do arquivo se existir
     
     if escolha != "➕ Novo Registro":
         is_edit_mode = True
@@ -444,8 +487,13 @@ def render_empenhos_global_view():
             if emp.get('id') == id_selecionado:
                 dados_edicao = emp
                 break
+        
+        # Se for editar, verifica se tem arquivo
+        if dados_edicao.get('has_file'):
+            with st.spinner("Carregando anexo..."):
+                file_info = get_file_from_firebase(st.session_state['db_conn'], id_selecionado)
     
-    # Helper para garantir data válida ou retornar None se vazio
+    # Helper para garantir data válida
     def safe_date(date_str):
         if not date_str: return None
         try:
@@ -453,7 +501,7 @@ def render_empenhos_global_view():
         except:
             return None
 
-    # Prepara valores iniciais (NONE se novo registro, para forçar preenchimento)
+    # Prepara valores iniciais
     val_prog = dados_edicao.get('programa') if is_edit_mode else None
     val_num = dados_edicao.get('numero_empenho', "")
     val_data = safe_date(dados_edicao.get('data_empenho')) if is_edit_mode else None
@@ -474,7 +522,6 @@ def render_empenhos_global_view():
         prog_index = lista_programas.index(val_prog)
 
     # 3. Formulário Unificado
-    # USAMOS CHAVES DINÂMICAS PARA FORÇAR LIMPEZA AO MUDAR MODO
     current_key_suffix = f"_{id_selecionado}" if is_edit_mode else "_new"
 
     with st.container(border=True):
@@ -484,8 +531,6 @@ def render_empenhos_global_view():
         ce1, ce2, ce3 = st.columns(3)
         e_prog = ce1.selectbox("Programa", options=lista_programas, index=prog_index, key=f"ge_prog{current_key_suffix}")
         e_num = ce2.text_input("Nº Empenho", value=val_num, key=f"ge_num{current_key_suffix}")
-        
-        # DATAS AGORA COMEÇAM VAZIAS (None)
         e_data = ce3.date_input("Data do Empenho", value=val_data, format="DD/MM/YYYY", key=f"ge_data{current_key_suffix}")
         
         ce4, ce5, ce6 = st.columns(3)
@@ -493,43 +538,58 @@ def render_empenhos_global_view():
         e_data_ob = ce5.date_input("Data da OB", value=val_data_ob, format="DD/MM/YYYY", key=f"ge_data_ob{current_key_suffix}")
         e_valor = ce6.number_input("Valor (R$)", value=val_valor, min_value=0.0, step=0.01, format="%.2f", key=f"ge_valor{current_key_suffix}")
         
-        # Reorganização: Status antes da Data Nota Fiscal
         ce7, ce8, ce9 = st.columns(3)
-        
         status_options = ["EXECUTADO", "PENDENTE", "CANCELADO"]
-        status_idx = status_options.index(val_status) if val_status in status_options else 1 # Default Pendente
+        status_idx = status_options.index(val_status) if val_status in status_options else 1 
         e_status = ce7.selectbox("Status", status_options, index=status_idx, key=f"ge_status{current_key_suffix}")
         
-        # LÓGICA CONDICIONAL: Data da nota só aparece se EXECUTADO
         e_data_nf = None
         if e_status == "EXECUTADO":
             e_data_nf = ce8.date_input("Data Nota Fiscal", value=val_data_nf, format="DD/MM/YYYY", key=f"ge_data_nf{current_key_suffix}")
         else:
-            ce8.write("---") # Espaço reservado visual
+            ce8.write("---")
             
         e_obs = ce9.text_input("Observação", value=val_obs, placeholder="Ex: 1ª Parcela", key=f"ge_obs{current_key_suffix}")
         
         e_itens = st.text_area("Itens Comprados / Descrição", value=val_itens, placeholder="Ex: Arroz, Feijão...", key=f"ge_itens{current_key_suffix}")
         
+        # -- ÁREA DE UPLOAD --
+        st.markdown("---")
+        if is_edit_mode and file_info:
+            c_down1, c_down2 = st.columns([1, 4])
+            c_down1.markdown("📄 **Arquivo Atual:**")
+            
+            # Botão de Download
+            b64_data = file_info.get('file_data')
+            f_name = file_info.get('file_name', 'arquivo.pdf')
+            try:
+                # Decodifica base64 para bytes
+                bin_data = base64.b64decode(b64_data)
+                c_down2.download_button(label=f"⬇️ Baixar {f_name}", data=bin_data, file_name=f_name)
+            except:
+                c_down2.error("Erro ao carregar arquivo.")
+                
+            e_file = st.file_uploader("Substituir arquivo (PDF)", type=["pdf"], key=f"ge_file{current_key_suffix}")
+        else:
+            e_file = st.file_uploader("Anexar arquivo (PDF) - Máx 1MB", type=["pdf"], key=f"ge_file{current_key_suffix}")
+        st.markdown("---")
+
         col_btn1, col_btn2 = st.columns([1, 5])
         
-        # Helper para salvar
-        def prepare_and_validate():
-            # Validação: Data do Empenho é sempre obrigatória
+        # Funções de ação
+        def process_save(emp_id_target, is_new=False):
             if not e_data:
                 st.error("⚠️ Erro: A 'Data do Empenho' é obrigatória!")
-                return None
-            
-            # Validação: Data NF obrigatória se Executado
+                return
             if e_status == "EXECUTADO" and not e_data_nf:
                 st.error("⚠️ Erro: Para status 'EXECUTADO', a 'Data Nota Fiscal' é obrigatória!")
-                return None
+                return
 
             str_data_emp = e_data.strftime("%Y-%m-%d")
             str_data_ob = e_data_ob.strftime("%Y-%m-%d") if e_data_ob else ""
             str_data_nf = e_data_nf.strftime("%Y-%m-%d") if e_data_nf else ""
             
-            return {
+            payload = {
                 "programa": e_prog, "numero_empenho": e_num,
                 "data_empenho": str_data_emp,
                 "ordem_bancaria": e_ob, "data_ob": str_data_ob,
@@ -537,22 +597,39 @@ def render_empenhos_global_view():
                 "data_nota_fiscal": str_data_nf,
                 "status": e_status, "itens": e_itens, "observacao": e_obs
             }
+            
+            # Se tiver arquivo novo para salvar
+            has_file_flag = False
+            if e_file:
+                success = save_file_to_firebase(st.session_state['db_conn'], emp_id_target, e_file)
+                if success:
+                    payload['has_file'] = True
+                    payload['file_name'] = e_file.name
+                    has_file_flag = True
+            elif is_edit_mode and dados_edicao.get('has_file'):
+                # Mantém o status anterior se não mudou o arquivo
+                payload['has_file'] = True
+                payload['file_name'] = dados_edicao.get('file_name')
+
+            if is_new:
+                payload["id"] = emp_id_target
+                st.session_state['empenhos_global'].append(payload)
+            else:
+                idx = -1
+                for i, emp in enumerate(st.session_state['empenhos_global']):
+                    if emp.get('id') == emp_id_target:
+                        idx = i
+                        break
+                if idx != -1:
+                    st.session_state['empenhos_global'][idx].update(payload)
+            
+            save_empenhos_to_firebase(st.session_state['db_conn'], st.session_state['empenhos_global'])
+            st.success("Salvo com sucesso!")
+            st.rerun()
 
         if is_edit_mode:
-            # BOTÕES DE EDIÇÃO
             if col_btn1.button("💾 Atualizar", type="primary", key=f"btn_upd{current_key_suffix}"):
-                dados_atualizados = prepare_and_validate()
-                if dados_atualizados:
-                    idx = -1
-                    for i, emp in enumerate(st.session_state['empenhos_global']):
-                        if emp.get('id') == id_selecionado:
-                            idx = i
-                            break
-                    if idx != -1:
-                        st.session_state['empenhos_global'][idx].update(dados_atualizados)
-                        save_empenhos_to_firebase(st.session_state['db_conn'], st.session_state['empenhos_global'])
-                        st.success("Registro atualizado com sucesso!")
-                        st.rerun()
+                process_save(id_selecionado, is_new=False)
             
             if col_btn2.button("🗑️ Excluir", type="secondary", key=f"btn_del{current_key_suffix}"):
                 idx = -1
@@ -562,19 +639,15 @@ def render_empenhos_global_view():
                         break
                 if idx != -1:
                     st.session_state['empenhos_global'].pop(idx)
+                    # Remove também o arquivo se existir
+                    delete_file_from_firebase(st.session_state['db_conn'], id_selecionado)
                     save_empenhos_to_firebase(st.session_state['db_conn'], st.session_state['empenhos_global'])
                     st.success("Registro excluído!")
                     st.rerun()
         else:
-            # BOTÃO DE CRIAÇÃO
             if st.button("Salvar Novo Empenho", type="primary", key=f"btn_save{current_key_suffix}"):
-                dados_novos = prepare_and_validate()
-                if dados_novos:
-                    dados_novos["id"] = str(datetime.now().timestamp())
-                    st.session_state['empenhos_global'].append(dados_novos)
-                    save_empenhos_to_firebase(st.session_state['db_conn'], st.session_state['empenhos_global'])
-                    st.success("Empenho salvo na lista geral!")
-                    st.rerun()
+                new_id = str(datetime.now().timestamp())
+                process_save(new_id, is_new=True)
 
     # 4. Tabela de Visualização
     st.divider()
@@ -606,25 +679,25 @@ def render_empenhos_global_view():
             for item in lista_final:
                 d_emp = datetime.strptime(item['data_empenho'], "%Y-%m-%d").strftime("%d/%m/%Y")
                 
-                # Formata Data OB se existir
                 d_ob = ""
                 if item.get('data_ob'):
                     try:
                         d_ob = datetime.strptime(item['data_ob'], "%Y-%m-%d").strftime("%d/%m/%Y")
                     except: pass
                 
-                # Formata Data NF se existir
                 d_nf = "-"
                 raw_nf = item.get('data_nota_fiscal', item.get('data_utilizacao', ''))
                 if raw_nf:
                     try:
                         d_nf = datetime.strptime(raw_nf, "%Y-%m-%d").strftime("%d/%m/%Y")
                     except: pass
+                
+                tem_arq = "✅" if item.get('has_file') else "❌"
 
                 tabela_dados.append({
                     "Programa": item['programa'], "Nº Empenho": item['numero_empenho'], "Data": d_emp,
                     "OB": item['ordem_bancaria'], "Data OB": d_ob, "Valor": item['valor'],
-                    "Data NF": d_nf, "Itens": item['itens'], "Obs": item['observacao'], "Status": item['status']
+                    "Data NF": d_nf, "Itens": item['itens'], "Obs": item['observacao'], "Status": item['status'], "Arq": tem_arq
                 })
             df_emp = pd.DataFrame(tabela_dados)
             st.dataframe(df_emp.style.format({"Valor": "R$ {:,.2f}"}), use_container_width=True, height=400)
