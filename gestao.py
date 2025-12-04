@@ -416,9 +416,8 @@ def render_empenhos_global_view():
     
     # 2. Seleção de Modo (Novo ou Editar Existente)
     opcoes_edicao = ["➕ Novo Registro"]
-    mapa_ids = {} # Mapeia o texto do selectbox para o ID real
+    mapa_ids = {}
     
-    # Ordena por data (mais recente primeiro)
     todos_empenhos_sorted = sorted(todos_empenhos, key=lambda x: x.get('data_empenho', ''), reverse=True)
     
     for emp in todos_empenhos_sorted:
@@ -446,22 +445,22 @@ def render_empenhos_global_view():
                 dados_edicao = emp
                 break
     
-    # Helper para garantir data válida
+    # Helper para garantir data válida ou retornar None se vazio
     def safe_date(date_str):
+        if not date_str: return None
         try:
             return datetime.strptime(date_str, "%Y-%m-%d").date()
         except:
-            return datetime.now().date()
+            return None
 
-    # Prepara valores iniciais (Vazio se novo, preenchido se editar)
+    # Prepara valores iniciais (NONE se novo registro, para forçar preenchimento)
     val_prog = dados_edicao.get('programa') if is_edit_mode else None
     val_num = dados_edicao.get('numero_empenho', "")
-    val_data = safe_date(dados_edicao.get('data_empenho')) if is_edit_mode else datetime.now().date()
+    val_data = safe_date(dados_edicao.get('data_empenho')) if is_edit_mode else None
     val_ob = dados_edicao.get('ordem_bancaria', "")
-    val_data_ob = safe_date(dados_edicao.get('data_ob')) if is_edit_mode else datetime.now().date()
+    val_data_ob = safe_date(dados_edicao.get('data_ob')) if is_edit_mode else None
     val_valor = float(dados_edicao.get('valor', 0.0))
-    # Tenta pegar 'data_nota_fiscal', se não existir pega o antigo 'data_utilizacao'
-    val_data_nf = safe_date(dados_edicao.get('data_nota_fiscal', dados_edicao.get('data_utilizacao'))) if is_edit_mode else datetime.now().date()
+    val_data_nf = safe_date(dados_edicao.get('data_nota_fiscal', dados_edicao.get('data_utilizacao'))) if is_edit_mode else None
     val_status = dados_edicao.get('status', "PENDENTE")
     val_obs = dados_edicao.get('observacao', "")
     val_itens = dados_edicao.get('itens', "")
@@ -470,61 +469,92 @@ def render_empenhos_global_view():
     if not lista_programas:
         lista_programas = ["Sem cadastro"]
     
-    # Ajusta índice do programa
     prog_index = 0
     if is_edit_mode and val_prog in lista_programas:
         prog_index = lista_programas.index(val_prog)
 
     # 3. Formulário Unificado
+    # USAMOS CHAVES DINÂMICAS PARA FORÇAR LIMPEZA AO MUDAR MODO
+    current_key_suffix = f"_{id_selecionado}" if is_edit_mode else "_new"
+
     with st.container(border=True):
         form_title = "✏️ Editando Registro" if is_edit_mode else "➕ Novo Lançamento"
         st.markdown(f"**{form_title}**")
         
         ce1, ce2, ce3 = st.columns(3)
-        e_prog = ce1.selectbox("Programa", options=lista_programas, index=prog_index, key="ge_prog")
-        e_num = ce2.text_input("Nº Empenho", value=val_num, key="ge_num")
-        # DATA FORMATADA DD/MM/AAAA
-        e_data = ce3.date_input("Data do Empenho", value=val_data, format="DD/MM/YYYY", key="ge_data")
+        e_prog = ce1.selectbox("Programa", options=lista_programas, index=prog_index, key=f"ge_prog{current_key_suffix}")
+        e_num = ce2.text_input("Nº Empenho", value=val_num, key=f"ge_num{current_key_suffix}")
+        
+        # DATAS AGORA COMEÇAM VAZIAS (None)
+        e_data = ce3.date_input("Data do Empenho", value=val_data, format="DD/MM/YYYY", key=f"ge_data{current_key_suffix}")
         
         ce4, ce5, ce6 = st.columns(3)
-        e_ob = ce4.text_input("Ordem Bancária (OB)", value=val_ob, key="ge_ob")
-        e_data_ob = ce5.date_input("Data da OB", value=val_data_ob, format="DD/MM/YYYY", key="ge_data_ob")
-        e_valor = ce6.number_input("Valor (R$)", value=val_valor, min_value=0.0, step=0.01, format="%.2f", key="ge_valor")
+        e_ob = ce4.text_input("Ordem Bancária (OB)", value=val_ob, key=f"ge_ob{current_key_suffix}")
+        e_data_ob = ce5.date_input("Data da OB", value=val_data_ob, format="DD/MM/YYYY", key=f"ge_data_ob{current_key_suffix}")
+        e_valor = ce6.number_input("Valor (R$)", value=val_valor, min_value=0.0, step=0.01, format="%.2f", key=f"ge_valor{current_key_suffix}")
         
+        # Reorganização: Status antes da Data Nota Fiscal
         ce7, ce8, ce9 = st.columns(3)
-        # NOME CORRIGIDO: Data Nota Fiscal
-        e_data_nf = ce7.date_input("Data Nota Fiscal", value=val_data_nf, format="DD/MM/YYYY", key="ge_data_nf")
-        e_status = ce8.selectbox("Status", ["EXECUTADO", "PENDENTE", "CANCELADO"], index=["EXECUTADO", "PENDENTE", "CANCELADO"].index(val_status), key="ge_status")
-        e_obs = ce9.text_input("Observação", value=val_obs, placeholder="Ex: 1ª Parcela", key="ge_obs")
         
-        e_itens = st.text_area("Itens Comprados / Descrição", value=val_itens, placeholder="Ex: Arroz, Feijão...", key="ge_itens")
+        status_options = ["EXECUTADO", "PENDENTE", "CANCELADO"]
+        status_idx = status_options.index(val_status) if val_status in status_options else 1 # Default Pendente
+        e_status = ce7.selectbox("Status", status_options, index=status_idx, key=f"ge_status{current_key_suffix}")
+        
+        # LÓGICA CONDICIONAL: Data da nota só aparece se EXECUTADO
+        e_data_nf = None
+        if e_status == "EXECUTADO":
+            e_data_nf = ce8.date_input("Data Nota Fiscal", value=val_data_nf, format="DD/MM/YYYY", key=f"ge_data_nf{current_key_suffix}")
+        else:
+            ce8.write("---") # Espaço reservado visual
+            
+        e_obs = ce9.text_input("Observação", value=val_obs, placeholder="Ex: 1ª Parcela", key=f"ge_obs{current_key_suffix}")
+        
+        e_itens = st.text_area("Itens Comprados / Descrição", value=val_itens, placeholder="Ex: Arroz, Feijão...", key=f"ge_itens{current_key_suffix}")
         
         col_btn1, col_btn2 = st.columns([1, 5])
         
+        # Helper para salvar
+        def prepare_and_validate():
+            # Validação: Data do Empenho é sempre obrigatória
+            if not e_data:
+                st.error("⚠️ Erro: A 'Data do Empenho' é obrigatória!")
+                return None
+            
+            # Validação: Data NF obrigatória se Executado
+            if e_status == "EXECUTADO" and not e_data_nf:
+                st.error("⚠️ Erro: Para status 'EXECUTADO', a 'Data Nota Fiscal' é obrigatória!")
+                return None
+
+            str_data_emp = e_data.strftime("%Y-%m-%d")
+            str_data_ob = e_data_ob.strftime("%Y-%m-%d") if e_data_ob else ""
+            str_data_nf = e_data_nf.strftime("%Y-%m-%d") if e_data_nf else ""
+            
+            return {
+                "programa": e_prog, "numero_empenho": e_num,
+                "data_empenho": str_data_emp,
+                "ordem_bancaria": e_ob, "data_ob": str_data_ob,
+                "valor": e_valor, 
+                "data_nota_fiscal": str_data_nf,
+                "status": e_status, "itens": e_itens, "observacao": e_obs
+            }
+
         if is_edit_mode:
             # BOTÕES DE EDIÇÃO
-            if col_btn1.button("💾 Atualizar", type="primary", key="btn_upd_gemp"):
-                # Encontra o índice na lista original para atualizar
-                idx = -1
-                for i, emp in enumerate(st.session_state['empenhos_global']):
-                    if emp.get('id') == id_selecionado:
-                        idx = i
-                        break
-                
-                if idx != -1:
-                    st.session_state['empenhos_global'][idx].update({
-                        "programa": e_prog, "numero_empenho": e_num,
-                        "data_empenho": e_data.strftime("%Y-%m-%d"),
-                        "ordem_bancaria": e_ob, "data_ob": e_data_ob.strftime("%Y-%m-%d"),
-                        "valor": e_valor, 
-                        "data_nota_fiscal": e_data_nf.strftime("%Y-%m-%d"), # Chave atualizada
-                        "status": e_status, "itens": e_itens, "observacao": e_obs
-                    })
-                    save_empenhos_to_firebase(st.session_state['db_conn'], st.session_state['empenhos_global'])
-                    st.success("Registro atualizado com sucesso!")
-                    st.rerun()
+            if col_btn1.button("💾 Atualizar", type="primary", key=f"btn_upd{current_key_suffix}"):
+                dados_atualizados = prepare_and_validate()
+                if dados_atualizados:
+                    idx = -1
+                    for i, emp in enumerate(st.session_state['empenhos_global']):
+                        if emp.get('id') == id_selecionado:
+                            idx = i
+                            break
+                    if idx != -1:
+                        st.session_state['empenhos_global'][idx].update(dados_atualizados)
+                        save_empenhos_to_firebase(st.session_state['db_conn'], st.session_state['empenhos_global'])
+                        st.success("Registro atualizado com sucesso!")
+                        st.rerun()
             
-            if col_btn2.button("🗑️ Excluir", type="secondary", key="btn_del_gemp"):
+            if col_btn2.button("🗑️ Excluir", type="secondary", key=f"btn_del{current_key_suffix}"):
                 idx = -1
                 for i, emp in enumerate(st.session_state['empenhos_global']):
                     if emp.get('id') == id_selecionado:
@@ -537,21 +567,14 @@ def render_empenhos_global_view():
                     st.rerun()
         else:
             # BOTÃO DE CRIAÇÃO
-            if st.button("Salvar Novo Empenho", type="primary", key="btn_save_gemp"):
-                novo_empenho = {
-                    "id": str(datetime.now().timestamp()),
-                    "programa": e_prog, "numero_empenho": e_num,
-                    "data_empenho": e_data.strftime("%Y-%m-%d"),
-                    "ordem_bancaria": e_ob, "data_ob": e_data_ob.strftime("%Y-%m-%d"),
-                    "valor": e_valor, 
-                    "data_nota_fiscal": e_data_nf.strftime("%Y-%m-%d"), # Chave atualizada
-                    "status": e_status, "itens": e_itens, "observacao": e_obs
-                }
-                
-                st.session_state['empenhos_global'].append(novo_empenho)
-                save_empenhos_to_firebase(st.session_state['db_conn'], st.session_state['empenhos_global'])
-                st.success("Empenho salvo na lista geral!")
-                st.rerun()
+            if st.button("Salvar Novo Empenho", type="primary", key=f"btn_save{current_key_suffix}"):
+                dados_novos = prepare_and_validate()
+                if dados_novos:
+                    dados_novos["id"] = str(datetime.now().timestamp())
+                    st.session_state['empenhos_global'].append(dados_novos)
+                    save_empenhos_to_firebase(st.session_state['db_conn'], st.session_state['empenhos_global'])
+                    st.success("Empenho salvo na lista geral!")
+                    st.rerun()
 
     # 4. Tabela de Visualização
     st.divider()
@@ -582,14 +605,21 @@ def render_empenhos_global_view():
             tabela_dados = []
             for item in lista_final:
                 d_emp = datetime.strptime(item['data_empenho'], "%Y-%m-%d").strftime("%d/%m/%Y")
-                d_ob = datetime.strptime(item['data_ob'], "%Y-%m-%d").strftime("%d/%m/%Y")
                 
-                # Tenta pegar a data nota fiscal, se não tiver (dados antigos), pega utilização
+                # Formata Data OB se existir
+                d_ob = ""
+                if item.get('data_ob'):
+                    try:
+                        d_ob = datetime.strptime(item['data_ob'], "%Y-%m-%d").strftime("%d/%m/%Y")
+                    except: pass
+                
+                # Formata Data NF se existir
+                d_nf = "-"
                 raw_nf = item.get('data_nota_fiscal', item.get('data_utilizacao', ''))
-                try:
-                    d_nf = datetime.strptime(raw_nf, "%Y-%m-%d").strftime("%d/%m/%Y")
-                except:
-                    d_nf = ""
+                if raw_nf:
+                    try:
+                        d_nf = datetime.strptime(raw_nf, "%Y-%m-%d").strftime("%d/%m/%Y")
+                    except: pass
 
                 tabela_dados.append({
                     "Programa": item['programa'], "Nº Empenho": item['numero_empenho'], "Data": d_emp,
