@@ -80,19 +80,15 @@ def load_global_programs_from_firebase(db):
     except Exception as e:
         return []
 
-# --- FUNÇÕES PARA ARQUIVOS (NOVO) ---
+# --- FUNÇÕES PARA ARQUIVOS ---
 def save_file_to_firebase(db, empenho_id, file_obj):
-    """Salva o arquivo em uma coleção separada para não pesar a lista principal"""
     if db is None or file_obj is None: return
     try:
-        # Limite de segurança do Firestore (aprox 1MB)
         if file_obj.size > 1000 * 1024:
             st.error("Arquivo muito grande! O limite é 1MB.")
             return False
-            
         file_bytes = file_obj.read()
         b64_string = base64.b64encode(file_bytes).decode('utf-8')
-        
         db.collection('pdde_arquivos').document(empenho_id).set({
             'file_name': file_obj.name,
             'file_data': b64_string
@@ -103,7 +99,6 @@ def save_file_to_firebase(db, empenho_id, file_obj):
         return False
 
 def get_file_from_firebase(db, empenho_id):
-    """Recupera o arquivo apenas quando solicitado"""
     if db is None: return None
     try:
         doc = db.collection('pdde_arquivos').document(empenho_id).get()
@@ -172,18 +167,15 @@ def init_session_state():
     if 'available_years' not in st.session_state:
         current_year = datetime.now().year
         anos_encontrados = set([current_year])
-        
         for conta in st.session_state['accounts'].values():
             for mov in conta.get('movimentacoes', []):
                 anos_encontrados.add(mov.get('ano', current_year))
-        
         for emp in st.session_state['empenhos_global']:
             try:
                 dt = datetime.strptime(emp['data_empenho'], "%Y-%m-%d")
                 anos_encontrados.add(dt.year)
             except:
                 pass
-                
         st.session_state['available_years'] = sorted(list(anos_encontrados))
 
 def get_saldo_anterior(account_name, programa, tipo_recurso, mes_alvo, ano_alvo):
@@ -213,20 +205,39 @@ def get_saldo_anterior(account_name, programa, tipo_recurso, mes_alvo, ano_alvo)
 
 # --- BARRA LATERAL ---
 def sidebar_config():
-    st.sidebar.header("⚙️ Configurações Gerais")
+    # REMOVIDO: Título "Configurações Gerais"
     
     if st.session_state['db_conn'] is None:
         st.sidebar.error("⚠️ Sem conexão com Banco de Dados")
     
-    st.sidebar.divider()
     st.sidebar.subheader("📍 Navegação")
     modulo_selecionado = st.sidebar.radio(
-        "Escolha o Módulo:",
-        ["🏦 Movimentação Financeira", "📜 Controle de Empenhos"]
+        "Módulo",
+        ["🏦 Movimentação Financeira", "📜 Controle de Empenhos"],
+        label_visibility="collapsed"
     )
     st.sidebar.divider()
 
+    conta_selecionada = None
+
     if modulo_selecionado == "🏦 Movimentação Financeira":
+        # 1. Seleção de Conta na Barra Lateral
+        contas_existentes = list(st.session_state['accounts'].keys())
+        
+        if contas_existentes:
+            conta_selecionada = st.sidebar.selectbox("📂 Selecione a Conta", options=contas_existentes)
+            
+            # LISTA DE PROGRAMAS DA CONTA SELECIONADA
+            progs_conta = st.session_state['accounts'][conta_selecionada].get('programas', [])
+            if progs_conta:
+                st.sidebar.markdown("**📌 Programas Vinculados:**")
+                for p in progs_conta:
+                    st.sidebar.markdown(f"• {p}")
+            else:
+                st.sidebar.caption("Nenhum programa vinculado.")
+            
+            st.sidebar.divider()
+
         with st.sidebar.expander("➕ Cadastrar Nova Conta"):
             nova_conta = st.text_input("Número da Conta / Nome", placeholder="Ex: 27.922-6")
             if st.button("Adicionar Conta"):
@@ -250,7 +261,7 @@ def sidebar_config():
             else:
                 st.warning("Este ano já existe.")
     
-    return modulo_selecionado
+    return modulo_selecionado, conta_selecionada
 
 def calcular_rateio_rendimento(conta, mes_num, ano, rendimento_total_banco, dados_entrada):
     saldos_base = {}
@@ -478,7 +489,7 @@ def render_empenhos_global_view():
     # Estados do Formulário
     dados_edicao = {}
     is_edit_mode = False
-    file_info = None # Armazena info do arquivo se existir
+    file_info = None
     
     if escolha != "➕ Novo Registro":
         is_edit_mode = True
@@ -488,7 +499,6 @@ def render_empenhos_global_view():
                 dados_edicao = emp
                 break
         
-        # Se for editar, verifica se tem arquivo
         if dados_edicao.get('has_file'):
             with st.spinner("Carregando anexo..."):
                 file_info = get_file_from_firebase(st.session_state['db_conn'], id_selecionado)
@@ -558,12 +568,9 @@ def render_empenhos_global_view():
         if is_edit_mode and file_info:
             c_down1, c_down2 = st.columns([1, 4])
             c_down1.markdown("📄 **Arquivo Atual:**")
-            
-            # Botão de Download
             b64_data = file_info.get('file_data')
             f_name = file_info.get('file_name', 'arquivo.pdf')
             try:
-                # Decodifica base64 para bytes
                 bin_data = base64.b64decode(b64_data)
                 c_down2.download_button(label=f"⬇️ Baixar {f_name}", data=bin_data, file_name=f_name)
             except:
@@ -576,7 +583,6 @@ def render_empenhos_global_view():
 
         col_btn1, col_btn2 = st.columns([1, 5])
         
-        # Funções de ação
         def process_save(emp_id_target, is_new=False):
             if not e_data:
                 st.error("⚠️ Erro: A 'Data do Empenho' é obrigatória!")
@@ -598,16 +604,12 @@ def render_empenhos_global_view():
                 "status": e_status, "itens": e_itens, "observacao": e_obs
             }
             
-            # Se tiver arquivo novo para salvar
-            has_file_flag = False
             if e_file:
                 success = save_file_to_firebase(st.session_state['db_conn'], emp_id_target, e_file)
                 if success:
                     payload['has_file'] = True
                     payload['file_name'] = e_file.name
-                    has_file_flag = True
             elif is_edit_mode and dados_edicao.get('has_file'):
-                # Mantém o status anterior se não mudou o arquivo
                 payload['has_file'] = True
                 payload['file_name'] = dados_edicao.get('file_name')
 
@@ -639,7 +641,6 @@ def render_empenhos_global_view():
                         break
                 if idx != -1:
                     st.session_state['empenhos_global'].pop(idx)
-                    # Remove também o arquivo se existir
                     delete_file_from_firebase(st.session_state['db_conn'], id_selecionado)
                     save_empenhos_to_firebase(st.session_state['db_conn'], st.session_state['empenhos_global'])
                     st.success("Registro excluído!")
@@ -659,7 +660,6 @@ def render_empenhos_global_view():
     st.markdown(f"**Lista de Empenhos - {ano_filtro}**")
     
     empenhos_ano = []
-    
     for emp in todos_empenhos:
         try:
             dt = datetime.strptime(emp['data_empenho'], "%Y-%m-%d")
@@ -678,13 +678,11 @@ def render_empenhos_global_view():
             tabela_dados = []
             for item in lista_final:
                 d_emp = datetime.strptime(item['data_empenho'], "%Y-%m-%d").strftime("%d/%m/%Y")
-                
                 d_ob = ""
                 if item.get('data_ob'):
                     try:
                         d_ob = datetime.strptime(item['data_ob'], "%Y-%m-%d").strftime("%d/%m/%Y")
                     except: pass
-                
                 d_nf = "-"
                 raw_nf = item.get('data_nota_fiscal', item.get('data_utilizacao', ''))
                 if raw_nf:
@@ -713,56 +711,54 @@ def render_empenhos_global_view():
 
 def main():
     init_session_state()
-    modulo_selecionado = sidebar_config()
+    modulo_selecionado, conta_selecionada = sidebar_config()
     
     st.title(f"📊 {modulo_selecionado}")
     
     if modulo_selecionado == "🏦 Movimentação Financeira":
-        contas = list(st.session_state['accounts'].keys())
-        if not contas:
+        if not conta_selecionada:
             st.info("👈 Cadastre uma conta na barra lateral para começar a usar o financeiro.")
             return
 
-        for aba, nome in zip(st.tabs(contas), contas):
-            with aba:
-                st.header(f"Conta: {nome}")
-                
-                with st.expander("⚙️ Gerenciar Programas da Conta"):
-                    c1, c2 = st.columns([3, 1])
-                    novo = c1.text_input("Novo Programa", key=f"np_{nome}")
-                    if c2.button("Adicionar", key=f"b_{nome}"):
-                        if novo and novo not in st.session_state['accounts'][nome]['programas']:
-                            st.session_state['accounts'][nome]['programas'].append(novo)
-                            if 'saldos_iniciais' not in st.session_state['accounts'][nome]:
-                                st.session_state['accounts'][nome]['saldos_iniciais'] = {}
-                            st.session_state['accounts'][nome]['saldos_iniciais'][novo] = {'Capital': 0.0, 'Custeio': 0.0}
-                            save_account_to_firebase(st.session_state['db_conn'], nome, st.session_state['accounts'][nome])
-                            st.rerun()
-                    
-                    progs = st.session_state['accounts'][nome].get('programas', [])
-                    if progs:
-                        st.write("---")
-                        st.write("Saldos Iniciais (Abertura de Conta):")
-                        for p in progs:
-                            si = st.session_state['accounts'][nome].setdefault('saldos_iniciais', {}).setdefault(p, {'Capital': 0.0, 'Custeio': 0.0})
-                            k = f"{nome}_{p}"
-                            cols = st.columns([2, 1, 1, 1])
-                            cols[0].write(f"📂 {p}")
-                            n_cap = cols[1].number_input("Saldo Inicial Capital", value=si['Capital'], key=f"sic_{k}")
-                            n_cus = cols[2].number_input("Saldo Inicial Custeio", value=si['Custeio'], key=f"sis_{k}")
-                            if cols[3].button("Salvar", key=f"bts_{k}"):
-                                si['Capital'] = n_cap
-                                si['Custeio'] = n_cus
-                                save_account_to_firebase(st.session_state['db_conn'], nome, st.session_state['accounts'][nome])
-                                st.rerun()
+        nome = conta_selecionada
+        st.header(f"Conta: {nome}")
+        
+        with st.expander("⚙️ Gerenciar Programas da Conta"):
+            c1, c2 = st.columns([3, 1])
+            novo = c1.text_input("Novo Programa", key=f"np_{nome}")
+            if c2.button("Adicionar", key=f"b_{nome}"):
+                if novo and novo not in st.session_state['accounts'][nome]['programas']:
+                    st.session_state['accounts'][nome]['programas'].append(novo)
+                    if 'saldos_iniciais' not in st.session_state['accounts'][nome]:
+                        st.session_state['accounts'][nome]['saldos_iniciais'] = {}
+                    st.session_state['accounts'][nome]['saldos_iniciais'][novo] = {'Capital': 0.0, 'Custeio': 0.0}
+                    save_account_to_firebase(st.session_state['db_conn'], nome, st.session_state['accounts'][nome])
+                    st.rerun()
+            
+            progs = st.session_state['accounts'][nome].get('programas', [])
+            if progs:
+                st.write("---")
+                st.write("Saldos Iniciais (Abertura de Conta):")
+                for p in progs:
+                    si = st.session_state['accounts'][nome].setdefault('saldos_iniciais', {}).setdefault(p, {'Capital': 0.0, 'Custeio': 0.0})
+                    k = f"{nome}_{p}"
+                    cols = st.columns([2, 1, 1, 1])
+                    cols[0].write(f"📂 {p}")
+                    n_cap = cols[1].number_input("Saldo Inicial Capital", value=si['Capital'], key=f"sic_{k}")
+                    n_cus = cols[2].number_input("Saldo Inicial Custeio", value=si['Custeio'], key=f"sis_{k}")
+                    if cols[3].button("Salvar", key=f"bts_{k}"):
+                        si['Capital'] = n_cap
+                        si['Custeio'] = n_cus
+                        save_account_to_firebase(st.session_state['db_conn'], nome, st.session_state['accounts'][nome])
+                        st.rerun()
 
-                if st.session_state['accounts'][nome]['programas']:
-                    anos = sorted(st.session_state.get('available_years', [datetime.now().year]))
-                    for aba_ano, ano in zip(st.tabs([str(a) for a in anos]), anos):
-                        with aba_ano:
-                            render_financeiro_view(nome, ano, st.session_state['accounts'][nome]['programas'])
-                else:
-                    st.warning("Cadastre programas acima para começar.")
+        if st.session_state['accounts'][nome]['programas']:
+            anos = sorted(st.session_state.get('available_years', [datetime.now().year]))
+            for aba_ano, ano in zip(st.tabs([str(a) for a in anos]), anos):
+                with aba_ano:
+                    render_financeiro_view(nome, ano, st.session_state['accounts'][nome]['programas'])
+        else:
+            st.warning("Cadastre programas acima para começar.")
     
     else:
         render_empenhos_global_view()
