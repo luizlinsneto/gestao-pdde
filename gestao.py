@@ -131,17 +131,24 @@ def delete_account_from_firebase(db, account_name):
         st.error(f"Erro ao excluir conta: {e}")
 
 def rename_account_in_firebase(db, old_name, new_name):
+    """Renomeia a conta criando uma nova e deletando a antiga"""
     if db is None: return False
     try:
+        # Verifica se já existe
         new_ref = db.collection('pdde_contas').document(new_name)
         if new_ref.get().exists:
             st.warning(f"Já existe uma conta com o nome '{new_name}'.")
             return False
+            
+        # Pega dados da antiga
         old_ref = db.collection('pdde_contas').document(old_name)
         doc = old_ref.get()
         if not doc.exists:
             return False
+        
         data = doc.to_dict()
+        
+        # Salva na nova e apaga a antiga
         new_ref.set(data)
         old_ref.delete()
         return True
@@ -510,10 +517,13 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
                 {"Descrição": "15 - Saldo a Reprogramar", "Custeio": saldo_final_cust, "Capital": saldo_final_cap},
             ])
             df_demo["Total"] = df_demo["Custeio"] + df_demo["Capital"]
+            
             def highlight_demo_rows(row):
                 if "13 - VALOR" in row['Descrição'] or "15 - Saldo" in row['Descrição']:
-                    return ['background-color: #e0f2f1; font-weight: bold'] * len(row)
+                    # AJUSTE DA COR DA FONTE PARA PRETO
+                    return ['background-color: #e0f2f1; color: black; font-weight: bold'] * len(row)
                 return [''] * len(row)
+                
             st.dataframe(df_demo.style.format({
                     "Custeio": "R$ {:,.2f}", "Capital": "R$ {:,.2f}", "Total": "R$ {:,.2f}"
                 }).apply(highlight_demo_rows, axis=1), use_container_width=True, height=350)
@@ -770,7 +780,6 @@ def render_empenhos_global_view():
         if lista_final:
             tabela_dados = []
             for item in lista_final:
-                # CORREÇÃO CRÍTICA: TRATAMENTO DE ERRO NAS DATAS DA TABELA
                 try:
                     d_emp = datetime.strptime(item.get('data_empenho', ''), "%Y-%m-%d").strftime("%d/%m/%Y")
                 except:
